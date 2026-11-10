@@ -18,7 +18,7 @@ CDC内圧は、既存のSlowMonitorシステムが出力するGL840ログファ�
 |---|---|---|---:|---:|---:|
 | Cir01 | He供給 | `AT18ZQW-00` | `0x21` | 5000 sccm（5 SLM） | 100 sccm（2% F.S.） |
 | Cir02 | i-C4H10供給 | `AT1MSM9-00` | `0x22` | 400 sccm | 8 sccm（2% F.S.） |
-| Exh01 | CDC排気（He:i-C4H10 = 90:10の混合ガス） | `AT1MSM6-00` | `0x24` | 1000 sccm（1 SLM） | 20 sccm（2% F.S.、暫定値） |
+| Exh01 | CDC排気（He:i-C4H10 = 90:10の混合ガス） | `AT1MSM6-00` | `0x24` | 1000 sccm（1 SLM） | 20 sccm（2% F.S.） |
 
 3台とも校正ガスはHe:i-C4H10 = 90:10の混合ガスである。Cir01にはHe、Cir02にはi-C4H10、Exh01には混合ガスが流れる。
 
