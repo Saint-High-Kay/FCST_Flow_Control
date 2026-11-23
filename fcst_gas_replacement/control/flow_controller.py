@@ -6,14 +6,14 @@ It does not implement the FCST serial protocol itself.
 
 All application-facing flow values are in sccm on the MFC setpoint scale.
 The gas-replacement module performs the CF conversion and returns one
-setpoint for each active MFC.  MFCManager performs raw-register conversion,
-Digital-mode switching, Freeze Follow handling, identity checks and
-write/read-back verification.
+setpoint for each MFC included in a plan.  MFCManager performs raw-register
+conversion, Digital-mode switching, Freeze Follow handling, identity checks
+and write/read-back verification.
 
 Safety properties
 -----------------
 * Planning performs READ operations only; no MFC setting is changed.
-* All three MFCs are preflighted before the first WRITE is attempted.
+* Every MFC included in a plan is preflighted before the first WRITE is attempted.
 * Applying a plan requires both ``apply=True`` (or a direct call to
   ``apply_plan``) and an explicit ``confirmed=True`` argument.
 * A failed write stops the sequence.  This module does not attempt an
@@ -22,8 +22,9 @@ Safety properties
 
 Recommended command order
 -------------------------
-* Increasing total flow: Exh01 -> Cir01 -> Cir02
-* Decreasing total flow or stopping: Cir01 -> Cir02 -> Exh01
+* Three-MFC increase: Exh01 -> Cir01 -> Cir02
+* Three-MFC decrease or stop: Cir01 -> Cir02 -> Exh01
+* Supply-only feedback: Cir01 -> Cir02; Exh01 is not included.
 
 The caller must provide ``current_total_flow_sccm``.  This is the previous
 commanded total mixture-flow target tracked by the top-level controller, not
@@ -44,7 +45,7 @@ import argparse
 import math
 import sys
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
 from gas.gas_replacement import (
     GasReplacementError,
@@ -54,9 +55,14 @@ from gas.gas_replacement import (
 )
 
 
+# Keep the existing three-MFC default for standalone flow operations.
 MFC_NAMES: tuple[str, ...] = ("Cir01", "Cir02", "Exh01")
 INCREASE_ORDER: tuple[str, ...] = ("Exh01", "Cir01", "Cir02")
 DECREASE_ORDER: tuple[str, ...] = ("Cir01", "Cir02", "Exh01")
+
+# Pressure-feedback operations explicitly select these supply MFCs only.
+SUPPLY_MFC_NAMES: tuple[str, ...] = ("Cir01", "Cir02")
+SUPPLY_FLOW_ORDER: tuple[str, ...] = ("Cir01", "Cir02")
 FLOW_DIRECTION_TOLERANCE_SCCM = 0.01
 
 
@@ -112,7 +118,7 @@ class MFCPreflight:
 
 @dataclass(frozen=True, slots=True)
 class FlowControllerPlan:
-    """Complete, read-only plan for a three-MFC flow transition."""
+    """Complete, read-only plan for the selected MFCs."""
 
     current_total_flow_sccm: float
     target_total_flow_sccm: float
@@ -140,7 +146,7 @@ class MFCWriteResult:
 
 @dataclass(frozen=True, slots=True)
 class FlowExecutionResult:
-    """Summary of a completed three-MFC update."""
+    """Summary of the MFC updates included in a completed plan."""
 
     plan: FlowControllerPlan
     updated_mfcs: tuple[MFCWriteResult, ...]
@@ -218,9 +224,17 @@ def format_flow_plan(plan: FlowControllerPlan) -> str:
         )
 
     lines.extend(("", "MFC write order: " + (" -> ".join(plan.operation_order) if plan.operation_order else "No write (target unchanged).")))
-    lines.append("All three MFCs passed read-only preflight; no WRITE has been sent.")
+    lines.append(
+        f"All {len(plan.preflight)} planned MFC(s) passed read-only preflight; "
+        "no WRITE has been sent."
+    )
     if plan.gas_plan.stopped:
-        lines.append("STOP PLAN: all three MFCs will receive the dedicated zero-flow command.")
+        planned_names = ", ".join(item.name for item in plan.gas_plan.mfc_setpoints)
+        lines.append(
+            f"STOP PLAN: zero-flow setpoints are planned for {planned_names}."
+        )
+    if "Exh01" not in plan.gas_plan.by_name():
+        lines.append("Exh01 is excluded from this plan; its setpoint is not changed.")
     return "\n".join(lines)
 
 
@@ -243,52 +257,65 @@ class FlowController:
         *,
         current_total_flow_sccm: float,
         force: bool = False,
+        include_exhaust: bool = True,
     ) -> FlowControllerPlan:
-        """Calculate and preflight a three-MFC transition without writing.
+        """Calculate and preflight an MFC transition without writing.
 
         ``current_total_flow_sccm`` must be the previous commanded total
         mixture flow tracked by the caller.  It is not read from the MFCs and
         should not be replaced by an instantaneous indicated-flow value.
 
-        All MFCs are checked before a plan is returned.  If any identity,
-        range, mode-state or communication check fails, this method raises
-        ``FlowPreflightError`` and no MFC write has been performed.
+        ``include_exhaust`` defaults to True, preserving the existing
+        three-MFC behavior for standalone operations.  The pressure-feedback
+        controller explicitly passes False, so only Cir01 and Cir02 are
+        included in its calculated plan, preflight, and write sequence.
+
+        Every MFC included in the plan is checked before the plan is returned.
+        If any identity, range, mode-state or communication check fails, this
+        method raises ``FlowPreflightError`` and no MFC write has been performed.
         """
         current = _normalise_nonnegative_flow(
             current_total_flow_sccm, "Current total flow"
         )
         try:
-            gas_plan = calculate_gas_replacement_plan(target_total_flow_sccm)
+            gas_plan = calculate_gas_replacement_plan(
+                target_total_flow_sccm,
+                include_exhaust=include_exhaust,
+            )
         except (GasReplacementError, ValueError) as exc:
             raise FlowControllerError(f"Invalid target flow: {exc}") from exc
+
+        target_mfc_names = MFC_NAMES if include_exhaust else SUPPLY_MFC_NAMES
+        increase_order = INCREASE_ORDER if include_exhaust else SUPPLY_FLOW_ORDER
+        decrease_order = DECREASE_ORDER if include_exhaust else SUPPLY_FLOW_ORDER
 
         target = gas_plan.total_mixture_flow_sccm
         difference = target - current
         if difference > FLOW_DIRECTION_TOLERANCE_SCCM:
             direction = "increase"
-            order = INCREASE_ORDER
+            order = increase_order
         elif difference < -FLOW_DIRECTION_TOLERANCE_SCCM:
             direction = "decrease"
-            order = DECREASE_ORDER
+            order = decrease_order
         elif force:
             direction = "reapply"
-            order = DECREASE_ORDER if target == 0.0 else INCREASE_ORDER
+            order = decrease_order if target == 0.0 else increase_order
         else:
             direction = "hold"
             order = ()
 
         preflight_results: list[MFCPreflight] = []
         setpoints_by_name = gas_plan.by_name()
-        missing = set(MFC_NAMES) - set(setpoints_by_name)
-        extra = set(setpoints_by_name) - set(MFC_NAMES)
+        missing = set(target_mfc_names) - set(setpoints_by_name)
+        extra = set(setpoints_by_name) - set(target_mfc_names)
         if missing or extra:
             raise FlowControllerError(
                 f"Gas-replacement plan MFC names mismatch; missing={sorted(missing)}, "
                 f"unexpected={sorted(extra)}."
             )
 
-        # Always preflight in a stable order before allowing any write.
-        for name in MFC_NAMES:
+        # Always preflight every selected MFC in a stable order before writes.
+        for name in target_mfc_names:
             item = setpoints_by_name[name]
             try:
                 _validate_profile_matches_setpoint(self.manager, item)
@@ -396,12 +423,14 @@ class FlowController:
         apply: bool = False,
         confirmed: bool = False,
         force: bool = False,
+        include_exhaust: bool = True,
     ) -> FlowControllerPlan | FlowExecutionResult:
         """Plan a target flow, optionally applying it after confirmation."""
         plan = self.plan_total_flow_sccm(
             target_total_flow_sccm,
             current_total_flow_sccm=current_total_flow_sccm,
             force=force,
+            include_exhaust=include_exhaust,
         )
         if not apply:
             return plan
