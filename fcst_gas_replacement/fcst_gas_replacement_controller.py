@@ -3,8 +3,8 @@
 
 The controller integrates:
     control/pressure_controller.py  : read GL840 log and decide total flow
-    gas/gas_replacement.py           : calculate Cir01/Cir02/Exh01 setpoints
-    control/flow_controller.py      : preflight and apply the MFC setpoints
+    gas/gas_replacement.py           : calculate Cir01/Cir02 feedback setpoints
+    control/flow_controller.py      : preflight and apply supply-MFC setpoints
     data_logger.py                  : log Setpoint and Indicated Flow values
     mfc/fcst_driver.py              : shared RS-485 connection
     mfc/mfc_manager.py              : MFC identity, mode, and write verification
@@ -13,7 +13,9 @@ Safety model:
 * Default operation is DRY RUN. No MFC WRITE is issued unless --apply is set.
 * --apply requires the operator to type "ENABLE FEEDBACK" once at startup.
 * The declared current total flow must be accurate; it determines the MFC
-  transition order. Digital-mode setpoints are checked against that declaration.
+  transition order. Cir01/Cir02 Digital-mode setpoints are checked against it.
+* Pressure feedback adjusts Cir01 and Cir02 only. Exh01 remains outside the
+  pressure-feedback setpoint calculation and write sequence.
 * A stale/invalid GL840 record or an MFC preflight/write error stops the
   controller. No automatic stop or rollback is attempted on an error.
 * Starting from 0 sccm does not automatically restart the gas flow. Start the
@@ -159,11 +161,13 @@ class GasReplacementFeedbackController:
         self._log_sample_number = 0
 
     def verify_startup(self, *, applying: bool) -> None:
-        """Verify MFC identities and check declared flow against digital SPs.
+        """Verify all MFC identities and supply flow against digital setpoints.
 
-        An Analog-mode MFC is reported but its digital Setpoint register is not
-        used to validate the declared current flow, because that register may
-        not represent the active analog input command.
+        An Analog-mode supply MFC is reported but its digital Setpoint register
+        is not used to validate the declared current flow, because that register
+        may not represent the active analog input command. Exh01 is still read
+        and displayed for status/identity monitoring, but its setpoint is not
+        compared with the supply-flow reference.
         """
         statuses = self.manager.read_all_status()
         missing = {"Cir01", "Cir02", "Exh01"} - set(statuses)
@@ -186,14 +190,16 @@ class GasReplacementFeedbackController:
                 f"indicated={status.indicated_flow_sccm_equivalent:.3f} sccm"
             )
 
+        # Exh01 is deliberately excluded from feedback setpoint validation.
         expected_plan = calculate_gas_replacement_plan(
-            self.current_total_flow_sccm
+            self.current_total_flow_sccm,
+            include_exhaust=False,
         )
         expected_by_name = expected_plan.by_name()
         mismatches: list[str] = []
         analog_names: list[str] = []
 
-        for name in ("Cir01", "Cir02", "Exh01"):
+        for name in ("Cir01", "Cir02"):
             status = statuses[name]
             if status.current_control_mode != 0x01:  # not Digital
                 analog_names.append(name)
@@ -222,23 +228,23 @@ class GasReplacementFeedbackController:
         if analog_names:
             print(
                 "[WARN] Digital Setpoint readback cannot verify the active command "
-                "for Analog-mode MFC(s): " + ", ".join(analog_names)
+                "for Analog-mode supply MFC(s): " + ", ".join(analog_names)
             )
         if mismatches:
             detail = "\n  - ".join(mismatches)
             message = (
                 "The declared current total flow does not match the current "
-                "Digital-mode MFC Setpoints:\n  - " + detail
+                "Digital-mode supply MFC Setpoints:\n  - " + detail
             )
             if applying:
                 raise ControllerStartupError(
                     message + "\nAutomatic MFC writes are blocked. Check the actual "
-                    "setpoints and restart with the correct --current-flow-sccm."
+                    "supply setpoints and restart with the correct --current-flow-sccm."
                 )
             print("[WARN] " + message.replace("\n", "\n       "))
         else:
             print(
-                f"Declared current total flow: {self.current_total_flow_sccm:.3f} sccm"
+                f"Declared current supply flow: {self.current_total_flow_sccm:.3f} sccm"
             )
 
         print("Startup identity check completed.\n")
@@ -263,9 +269,12 @@ class GasReplacementFeedbackController:
             f"Proposed total flow  : {decision.proposed_total_flow_sccm:.2f} sccm"
         )
 
+        # The pressure-feedback plan contains Cir01 and Cir02 only.
+        # Exh01 is not calculated, preflighted, or written by this feedback path.
         plan = self.flow_controller.plan_total_flow_sccm(
             decision.proposed_total_flow_sccm,
             current_total_flow_sccm=self.current_total_flow_sccm,
+            include_exhaust=False,
         )
         print()
         print(format_flow_plan(plan))
@@ -277,13 +286,13 @@ class GasReplacementFeedbackController:
             result = self.flow_controller.apply_plan(plan, confirmed=True)
             self.current_total_flow_sccm = plan.target_total_flow_sccm
             applied = True
-            print("\nMFC setpoint updates completed and verified:")
+            print("\nSupply MFC setpoint updates completed and verified:")
             for item in result.updated_mfcs:
                 print(
                     f"  {item.name}: {item.requested_setpoint_sccm:.3f} sccm"
                 )
         else:
-            print("\nDRY RUN: proposed MFC setpoints were not written.")
+            print("\nDRY RUN: proposed supply-MFC setpoints were not written.")
             print(
                 "The current-flow reference is unchanged because no physical "
                 "MFC update was made."
@@ -383,7 +392,8 @@ class GasReplacementFeedbackController:
 def _confirm_live_operation() -> bool:
     print("\n" + "!" * 72)
     print("WARNING: AUTOMATIC MFC WRITES ARE ENABLED.")
-    print("The controller will change Cir01, Cir02 and Exh01 setpoints as feedback runs.")
+    print("Pressure feedback will adjust Cir01 and Cir02 setpoints only.")
+    print("Exh01 will not be adjusted by pressure feedback; its existing setpoint is left unchanged.")
     print("Confirm that the gas lines, exhaust path, bubbler, and initial flow are ready.")
     print("!" * 72)
     try:
