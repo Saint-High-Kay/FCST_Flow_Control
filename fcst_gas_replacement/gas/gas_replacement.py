@@ -194,13 +194,8 @@ def validate_total_flow_sccm(
     total_flow_sccm: float,
     *,
     allow_stop: bool = True,
+    include_exhaust: bool = True,
 ) -> float:
-    """Validate total 90:10 mixture flow against all three MFCs.
-
-    Zero is a dedicated stop command.  For a positive flow, all three MFCs
-    must remain within their 2–100 % FS setpoint ranges.  This function does
-    not silently clamp an invalid request.
-    """
     try:
         flow = float(total_flow_sccm)
     except (TypeError, ValueError) as exc:
@@ -212,30 +207,31 @@ def validate_total_flow_sccm(
     if math.isclose(flow, 0.0, rel_tol=0.0, abs_tol=1e-9):
         if allow_stop:
             return 0.0
-        raise GasReplacementError("Zero flow (stop) is not allowed for this operation")
+        raise GasReplacementError("Zero flow (stop) is not allowed")
 
     if flow < 0.0:
         raise GasReplacementError("Negative total mixture flow is not supported")
 
-    if flow < MIN_ACTIVE_TOTAL_FLOW_SCCM - 1e-9:
+    profiles = MFC_FLOW_LIMITS if include_exhaust else SUPPLY_MFC_FLOW_LIMITS
+    min_flow, max_flow = _intersection_limits(profiles)
+
+    if flow < min_flow - 1e-9:
         raise GasReplacementError(
-            f"Positive total flow must be at least {MIN_ACTIVE_TOTAL_FLOW_SCCM:.2f} sccm "
-            "so that all three MFCs remain above their 2 % FS minimums"
+            f"Positive total flow must be at least {min_flow:.2f} sccm"
         )
 
-    if flow > MAX_TOTAL_FLOW_SCCM + 1e-9:
+    if flow > max_flow + 1e-9:
         raise GasReplacementError(
-            f"Total flow exceeds the common three-MFC maximum "
-            f"({MAX_TOTAL_FLOW_SCCM:.2f} sccm)"
+            f"Total flow exceeds the configured MFC limit ({max_flow:.2f} sccm)"
         )
 
     return flow
-
 
 def calculate_gas_replacement_plan(
     total_mixture_flow_sccm: float,
     *,
     allow_stop: bool = True,
+    include_exhaust: bool = True,
 ) -> GasReplacementPlan:
     """Calculate Cir01/Cir02/Exh01 setpoints for a total mixture-flow target.
 
