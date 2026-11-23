@@ -208,28 +208,28 @@ FCSTのSetpoint・Indicated Flowレジスタは16 bitの値であり、`0x4000`�
 
 **流量の分配**
 
-合計混合ガス流量を\(Q_{\mathrm{mix}}\)とすると、実ガス流量の目標値は次のとおりである。
+合計混合ガス流量を$Q_{\mathrm{mix}}$とすると、実ガス流量の目標値は次のとおりである。
 
-\[
+$$
 Q_{\mathrm{He}}=0.90Q_{\mathrm{mix}}
-\]
+$$
 
-\[
+$$
 Q_{\mathrm{iC_4H_{10}}}=0.10Q_{\mathrm{mix}}
-\]
+$$
 
-\[
+$$
 Q_{\mathrm{Exh}}=Q_{\mathrm{mix}}
-\]
+$$
 
 **CF補正**
 
 混合ガスで校正されたMFCに別のガスを流す場合、設定流量は次式で求める。
 
-\[
+$$
 Q_{\mathrm{set}}=Q_{\mathrm{actual}}\times
 \frac{CF_{\mathrm{calibration}}}{CF_{\mathrm{flowing}}}
-\]
+$$
 
 Cir01はHeのCF、Cir02はi-C4H10のCF、Exh01は混合ガスのCFを用いる。
 
