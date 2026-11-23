@@ -113,17 +113,33 @@ MFC_FLOW_LIMITS: Tuple[MFCFlowLimit, ...] = (
     ),
 )
 
+# Supply MFCs used by pressure feedback.
+SUPPLY_MFC_FLOW_LIMITS: Tuple[MFCFlowLimit, ...] = (
+    MFC_FLOW_LIMITS[0],  # Cir01
+    MFC_FLOW_LIMITS[1],  # Cir02
+)
 
-def _intersection_limits() -> tuple[float, float]:
-    min_total = max(item.minimum_total_mixture_sccm for item in MFC_FLOW_LIMITS)
-    max_total = min(item.maximum_total_mixture_sccm for item in MFC_FLOW_LIMITS)
-    if not (math.isfinite(min_total) and math.isfinite(max_total) and min_total < max_total):
+def _intersection_limits(
+    profiles: Tuple[MFCFlowLimit, ...] = MFC_FLOW_LIMITS,
+) -> tuple[float, float]:
+    min_total = max(item.minimum_total_mixture_sccm for item in profiles)
+    max_total = min(item.maximum_total_mixture_sccm for item in profiles)
+
+    if not (
+        math.isfinite(min_total)
+        and math.isfinite(max_total)
+        and min_total < max_total
+    ):
         raise RuntimeError("The configured MFC flow ranges do not overlap")
+
     return min_total, max_total
 
 
 MIN_ACTIVE_TOTAL_FLOW_SCCM, MAX_TOTAL_FLOW_SCCM = _intersection_limits()
 
+MIN_ACTIVE_SUPPLY_FLOW_SCCM, MAX_SUPPLY_FLOW_SCCM = (
+    _intersection_limits(SUPPLY_MFC_FLOW_LIMITS)
+)
 
 class GasReplacementError(ValueError):
     """Raised when a requested mixture flow cannot be represented by the MFCs."""
