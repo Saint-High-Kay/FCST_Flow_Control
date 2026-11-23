@@ -174,7 +174,7 @@ class MFCSetpoint:
 
 @dataclass(frozen=True)
 class GasReplacementPlan:
-    """Complete three-MFC plan for a requested total mixture flow."""
+    """MFC setpoint plan for a requested total mixture flow."""
 
     total_mixture_flow_sccm: float
     helium_actual_flow_sccm: float
@@ -233,15 +233,23 @@ def calculate_gas_replacement_plan(
     allow_stop: bool = True,
     include_exhaust: bool = True,
 ) -> GasReplacementPlan:
-    """Calculate Cir01/Cir02/Exh01 setpoints for a total mixture-flow target.
+    """Calculate the requested MFC setpoints for a total mixture-flow target.
 
     CF conversion:
         MFC setpoint = desired actual gas flow * CF(calibration gas) / CF(flowing gas)
 
-    The supply targets are split 90:10.  Exh01 receives the total mixture flow.
+    The supply targets are split 90:10.  If ``include_exhaust`` is True,
+    Exh01 also receives a setpoint for the total mixture flow.  If False,
+    Exh01 is omitted from the returned plan and is not part of this calculation.
     The result is calculation-only; no MFC operation is performed.
     """
-    total = validate_total_flow_sccm(total_mixture_flow_sccm, allow_stop=allow_stop)
+    total = validate_total_flow_sccm(
+        total_mixture_flow_sccm,
+        allow_stop=allow_stop,
+        include_exhaust=include_exhaust,
+    )
+    profiles = MFC_FLOW_LIMITS if include_exhaust else SUPPLY_MFC_FLOW_LIMITS
+
     if total == 0.0:
         stopped_setpoints = tuple(
             MFCSetpoint(
@@ -255,7 +263,7 @@ def calculate_gas_replacement_plan(
                 minimum_sccm=profile.minimum_sccm,
                 percent_of_full_scale=0.0,
             )
-            for profile in MFC_FLOW_LIMITS
+            for profile in profiles
         )
         return GasReplacementPlan(
             total_mixture_flow_sccm=0.0,
@@ -268,11 +276,12 @@ def calculate_gas_replacement_plan(
     actual_flows = {
         "Cir01": total * HE_FRACTION,
         "Cir02": total * IC4H10_FRACTION,
-        "Exh01": total,
     }
+    if include_exhaust:
+        actual_flows["Exh01"] = total
 
     setpoints = []
-    for profile in MFC_FLOW_LIMITS:
+    for profile in profiles:
         actual_flow = actual_flows[profile.name]
         setpoint = actual_flow * profile.setpoint_per_actual_gas_flow
         percent_fs = 100.0 * setpoint / profile.full_scale_sccm
@@ -340,7 +349,8 @@ def format_plan(plan: GasReplacementPlan) -> str:
         ]
     )
     if plan.stopped:
-        lines.append("STOP PLAN: all three MFC setpoints are zero (dedicated stop command).")
+        planned_names = ", ".join(item.name for item in plan.mfc_setpoints)
+        lines.append(f"STOP PLAN: zero-flow setpoints are planned for {planned_names}.")
     return "\n".join(lines)
 
 
