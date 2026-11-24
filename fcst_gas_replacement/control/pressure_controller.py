@@ -77,7 +77,11 @@ MAX_TOTAL_FLOW_SCCM = min(
 
 
 class PressureDataError(RuntimeError):
-    """Raised when the GL840 log is missing, stale, incomplete, or invalid."""
+    """Raised when the GL840 log is missing, incomplete, or invalid."""
+
+
+class PressureDataStaleError(PressureDataError):
+    """Raised only when the latest complete GL840 row is older than its limit."""
 
 
 class FlowRangeError(ValueError):
@@ -214,7 +218,7 @@ class PressureController:
                 f"GL840 timestamp is {abs(age_s):.1f} s in the future; check clock synchronization"
             )
         if age_s > self.max_data_age_s:
-            raise PressureDataError(
+            raise PressureDataStaleError(
                 f"GL840 data is stale: {age_s:.1f} s old "
                 f"(limit: {self.max_data_age_s:.1f} s)"
             )
